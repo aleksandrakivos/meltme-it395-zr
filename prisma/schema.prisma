@@ -1,0 +1,303 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MENADZER_PROIZVODNJE
+  MENADZER_PRODAJE
+}
+
+enum MaterialType {
+  VOSAK
+  FITILJ
+  MIRIS
+  TEGLICA
+  OSTALO
+}
+
+enum Unit {
+  G
+  ML
+  KOM
+}
+
+enum BatchStatus {
+  PLANIRANA
+  ZAPOCETA
+  U_TOKU
+  ZAVRSENA
+  DELIMICNO_USPESNA
+  OTKAZANA
+}
+
+enum StockMovementType {
+  NABAVKA // ulaz iz serije nabavke
+  IZDAVANJE // izlaz u proizvodnju (start serije ili naknadno izdavanje)
+  POVRACAJ // izdato pa vraćeno na zalihe pri završetku/otkazivanju
+  OTPAD // izdato, propalo, ne vraća se
+  KOREKCIJA // ručna korekcija (inventura / ispravka greške)
+}
+
+enum ProductMovementType {
+  PROIZVODNJA // ulaz iz završene serije (samo ispravni komadi)
+  PRODAJA // izlaz pri slanju porudžbine
+  POVRACAJ_PRODAJE // povraćaj pri otkazivanju poslate porudžbine
+  KOREKCIJA
+}
+
+enum OrderStatus {
+  NOVA
+  U_PRIPREMI
+  POSLATA
+  ZAVRSENA
+  OTKAZANA
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  role         Role
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  batches          ProductionBatch[]      @relation("BatchCreatedBy")
+  startedBatches   ProductionBatch[]      @relation("BatchStartedBy")
+  completedBatches ProductionBatch[]      @relation("BatchCompletedBy")
+  orders           Order[]
+  purchases        MaterialPurchase[]
+  stockMovements   StockMovement[]
+  productMovements ProductStockMovement[]
+
+  @@map("users")
+}
+
+model Supplier {
+  id      String  @id @default(cuid())
+  name    String
+  contact String?
+  phone   String?
+  email   String?
+
+  materials Material[]
+  purchases MaterialPurchase[]
+
+  @@map("suppliers")
+}
+
+model Material {
+  id               String       @id @default(cuid())
+  name             String
+  type             MaterialType
+  unit             Unit
+  stock            Decimal      @default(0) @db.Decimal(12, 3)
+  reserved         Decimal      @default(0) @db.Decimal(12, 3) // rezervisano za serije; raspoloživo = stock - reserved
+  avgPurchasePrice Decimal      @default(0) @map("avg_purchase_price") @db.Decimal(12, 4) // sistemski održavan ponderisani prosek
+  minStock         Decimal      @default(0) @map("min_stock") @db.Decimal(12, 3)
+  supplierId       String?      @map("supplier_id")
+
+  supplier    Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  recipeItems RecipeItem[]
+  batchLines  BatchMaterialLine[]
+  purchases   MaterialPurchase[]
+  movements   StockMovement[]
+
+  @@index([supplierId])
+  @@map("materials")
+}
+
+model Product {
+  id           String  @id @default(cuid())
+  name         String
+  waxType      String  @map("wax_type")
+  scent        String?
+  size         String
+  sellingPrice Decimal @map("selling_price") @db.Decimal(10, 2)
+  stock        Int     @default(0)
+  reserved     Int     @default(0) // rezervisano porudžbinama; raspoloživo = stock - reserved
+  active       Boolean @default(true)
+
+  recipeItems RecipeItem[]
+  batches     ProductionBatch[]
+  orderItems  OrderItem[]
+  movements   ProductStockMovement[]
+
+  @@map("products")
+}
+
+model RecipeItem {
+  id         String  @id @default(cuid())
+  productId  String  @map("product_id")
+  materialId String  @map("material_id")
+  quantity   Decimal @db.Decimal(12, 3) // po 1 komadu proizvoda
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  material Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@unique([productId, materialId])
+  @@map("recipe_items")
+}
+
+model ProductionBatch {
+  id               String      @id @default(cuid())
+  productId        String      @map("product_id")
+  status           BatchStatus @default(PLANIRANA)
+  plannedQuantity  Int         @map("planned_quantity")
+  producedQuantity Int?        @map("produced_quantity") // ispravni komadi
+  scrapQuantity    Int         @default(0) @map("scrap_quantity") // škart u komadima
+  note             String?
+  cancelReason     String?     @map("cancel_reason")
+
+  plannedAt   DateTime  @default(now()) @map("planned_at")
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  createdBy   String  @map("created_by")
+  startedBy   String? @map("started_by")
+  completedBy String? @map("completed_by")
+
+  product         Product             @relation(fields: [productId], references: [id], onDelete: Restrict)
+  user            User                @relation("BatchCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
+  startedByUser   User?               @relation("BatchStartedBy", fields: [startedBy], references: [id], onDelete: Restrict)
+  completedByUser User?               @relation("BatchCompletedBy", fields: [completedBy], references: [id], onDelete: Restrict)
+  lines           BatchMaterialLine[]
+
+  @@index([productId])
+  @@index([status])
+  @@map("production_batches")
+}
+
+/// Stavka serije prati sirovinu kroz sve faze.
+/// Invarijanta posle završetka/otkazivanja:
+/// issuedQuantity == consumedQuantity + wasteQuantity + returnedQuantity
+model BatchMaterialLine {
+  id         String @id @default(cuid())
+  batchId    String @map("batch_id")
+  materialId String @map("material_id")
+
+  plannedQuantity  Decimal @map("planned_quantity") @db.Decimal(12, 3) // receptura × planirana količina
+  reservedQuantity Decimal @default(0) @map("reserved_quantity") @db.Decimal(12, 3)
+  issuedQuantity   Decimal @default(0) @map("issued_quantity") @db.Decimal(12, 3)
+  consumedQuantity Decimal @default(0) @map("consumed_quantity") @db.Decimal(12, 3)
+  wasteQuantity    Decimal @default(0) @map("waste_quantity") @db.Decimal(12, 3)
+  returnedQuantity Decimal @default(0) @map("returned_quantity") @db.Decimal(12, 3)
+  unitPrice        Decimal @default(0) @map("unit_price") @db.Decimal(12, 4) // snimak proseka u trenutku izdavanja
+
+  batch    ProductionBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  material Material        @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, materialId])
+  @@index([batchId])
+  @@map("batch_material_lines")
+}
+
+model MaterialPurchase {
+  id          String   @id @default(cuid())
+  materialId  String   @map("material_id")
+  supplierId  String?  @map("supplier_id")
+  quantity    Decimal  @db.Decimal(12, 3)
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 4) // istorijska nabavna cena
+  totalCost   Decimal  @map("total_cost") @db.Decimal(12, 2) // quantity × unitPrice, denormalizovano
+  documentNo  String?  @map("document_no")
+  purchasedAt DateTime @map("purchased_at")
+  note        String?
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  material  Material        @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  supplier  Supplier?       @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  user      User            @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  movements StockMovement[]
+
+  @@index([materialId, purchasedAt])
+  @@map("material_purchases")
+}
+
+model StockMovement {
+  id         String            @id @default(cuid())
+  materialId String            @map("material_id")
+  type       StockMovementType
+  quantity   Decimal           @db.Decimal(12, 3) // uvek pozitivna; smer nosi `type`
+  unitPrice  Decimal           @map("unit_price") @db.Decimal(12, 4) // snapshot proseka/nabavne cene
+  purchaseId String?           @map("purchase_id")
+  batchId    String?           @map("batch_id")
+  note       String?
+  createdBy  String            @map("created_by")
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  material Material          @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  purchase MaterialPurchase? @relation(fields: [purchaseId], references: [id], onDelete: SetNull)
+  user     User              @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@index([materialId, createdAt])
+  @@index([batchId])
+  @@map("stock_movements")
+}
+
+model ProductStockMovement {
+  id        String              @id @default(cuid())
+  productId String              @map("product_id")
+  type      ProductMovementType
+  quantity  Int
+  unitCost  Decimal?            @map("unit_cost") @db.Decimal(12, 4) // stvarna cena koštanja pri ulazu iz proizvodnje
+  batchId   String?             @map("batch_id")
+  orderId   String?             @map("order_id")
+  note      String?
+  createdBy String              @map("created_by")
+  createdAt DateTime            @default(now()) @map("created_at")
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  user    User    @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+
+  @@index([productId, createdAt])
+  @@map("product_stock_movements")
+}
+
+model Customer {
+  id      String  @id @default(cuid())
+  name    String
+  email   String?
+  phone   String?
+  address String?
+
+  orders Order[]
+
+  @@map("customers")
+}
+
+model Order {
+  id         String      @id @default(cuid())
+  customerId String      @map("customer_id")
+  status     OrderStatus @default(NOVA)
+  date       DateTime    @default(now())
+  createdBy  String      @map("created_by")
+
+  customer Customer    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  user     User        @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  items    OrderItem[]
+
+  @@index([customerId])
+  @@index([status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String  @map("order_id")
+  productId String  @map("product_id")
+  quantity  Int
+  price     Decimal @db.Decimal(10, 2) // snapshot prodajne cene
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([orderId, productId])
+  @@map("order_items")
+}

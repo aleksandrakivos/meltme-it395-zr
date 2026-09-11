@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: meltme-db
+    environment:
+      POSTGRES_USER: meltme
+      POSTGRES_PASSWORD: meltme
+      POSTGRES_DB: meltme
+    ports:
+      - "5433:5432"
+    volumes:
+      - meltme-pgdata:/var/lib/postgresql/data
+volumes:
+  meltme-pgdata:
