@@ -17,6 +17,7 @@ import {
 } from "@/lib/action-result";
 import { prisma } from "@/lib/prisma";
 import {
+  canCancelBatch,
   canCompleteBatch,
   canTransitionBatch,
 } from "@/lib/services/batch-lifecycle";
@@ -449,7 +450,7 @@ export async function completeProductionBatch(
   }
 }
 
-/** Otkazivanje: oslobađa rezervacije i vraća neutrošeno izdato. */
+/** Otkazivanje: PLANIRANA ili ZAPOCETA (U_TOKU se mora završiti). */
 export async function cancelProductionBatch(
   input: unknown,
 ): Promise<ActionResult> {
@@ -470,10 +471,29 @@ export async function cancelProductionBatch(
     if (!batch) {
       return { ok: false, error: "Serija nije pronađena" };
     }
+    if (!canCancelBatch(batch.status)) {
+      return {
+        ok: false,
+        error:
+          batch.status === BatchStatus.U_TOKU
+            ? "Serija u toku se ne može otkazati — završite seriju i evidentirajte stanje"
+            : invalidTransition(batch.status, BatchStatus.OTKAZANA),
+      };
+    }
     if (!canTransitionBatch(batch.status, BatchStatus.OTKAZANA)) {
       return {
         ok: false,
         error: invalidTransition(batch.status, BatchStatus.OTKAZANA),
+      };
+    }
+
+    const report =
+      batch.status === BatchStatus.ZAPOCETA ? (parsed.data.lines ?? []) : [];
+
+    if (batch.status === BatchStatus.ZAPOCETA && report.length === 0) {
+      return {
+        ok: false,
+        error: "Unesite utrošak i otpad po sirovini pre otkazivanja",
       };
     }
 
@@ -484,9 +504,9 @@ export async function cancelProductionBatch(
         materialName: line.material.name,
         reservedQuantity: line.reservedQuantity.toNumber(),
         issuedQuantity: line.issuedQuantity.toNumber(),
-        consumedQuantity: line.consumedQuantity.toNumber(),
         unitPrice: line.unitPrice.toNumber(),
       })),
+      report,
     );
     if (!plan.ok) {
       return { ok: false, error: plan.error };
@@ -516,8 +536,7 @@ export async function cancelProductionBatch(
           });
         }
 
-        if (line.returnToStock > 0) {
-          await returnMaterialToStock(tx, line.materialId, line.returnToStock);
+        if (batch.status === BatchStatus.ZAPOCETA) {
           await tx.batchMaterialLine.update({
             where: {
               batchId_materialId: {
@@ -525,23 +544,49 @@ export async function cancelProductionBatch(
                 materialId: line.materialId,
               },
             },
-            data: { returnedQuantity: line.returnToStock },
-          });
-          const unitPrice =
-            batch.lines
-              .find((l) => l.materialId === line.materialId)
-              ?.unitPrice.toNumber() ?? 0;
-          await tx.stockMovement.create({
             data: {
-              materialId: line.materialId,
-              type: StockMovementType.POVRACAJ,
-              quantity: line.returnToStock,
-              unitPrice,
-              batchId: batch.id,
-              note: "Povraćaj pri otkazivanju serije",
-              createdBy: actor.id,
+              consumedQuantity: line.consumedQuantity,
+              wasteQuantity: line.wasteQuantity,
+              returnedQuantity: line.returnToStock,
+              reservedQuantity: 0,
             },
           });
+
+          if (line.returnToStock > 0) {
+            const returned = await returnMaterialToStock(
+              tx,
+              line.materialId,
+              line.returnToStock,
+            );
+            if (!returned) {
+              throw new Error(`Povraćaj nije uspeo: ${line.materialName}`);
+            }
+            await tx.stockMovement.create({
+              data: {
+                materialId: line.materialId,
+                type: StockMovementType.POVRACAJ,
+                quantity: line.returnToStock,
+                unitPrice: line.unitPrice,
+                batchId: batch.id,
+                note: "Povraćaj pri otkazivanju serije",
+                createdBy: actor.id,
+              },
+            });
+          }
+
+          if (line.wasteQuantity > 0) {
+            await tx.stockMovement.create({
+              data: {
+                materialId: line.materialId,
+                type: StockMovementType.OTPAD,
+                quantity: line.wasteQuantity,
+                unitPrice: line.unitPrice,
+                batchId: batch.id,
+                note: "Otpad pri otkazivanju serije",
+                createdBy: actor.id,
+              },
+            });
+          }
         }
       }
 

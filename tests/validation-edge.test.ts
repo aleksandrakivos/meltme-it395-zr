@@ -100,6 +100,18 @@ describe("cancelBatchSchema", () => {
         .success,
     ).toBe(true);
   });
+
+  it("accepts optional material report lines", () => {
+    expect(
+      cancelBatchSchema.safeParse({
+        batchId: "b1",
+        reason: "Pukla teglica",
+        lines: [
+          { materialId: "m1", consumedQuantity: 10, wasteQuantity: 2 },
+        ],
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe("recipeItemUpsertSchema", () => {

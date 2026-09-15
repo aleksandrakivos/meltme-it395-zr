@@ -11,7 +11,7 @@ import type { BatchStatus } from "@prisma/client";
 export const BATCH_TRANSITIONS: Record<BatchStatus, readonly BatchStatus[]> = {
   PLANIRANA: ["ZAPOCETA", "OTKAZANA"],
   ZAPOCETA: ["U_TOKU", "ZAVRSENA", "DELIMICNO_USPESNA", "OTKAZANA"],
-  U_TOKU: ["ZAVRSENA", "DELIMICNO_USPESNA", "OTKAZANA"],
+  U_TOKU: ["ZAVRSENA", "DELIMICNO_USPESNA"],
   ZAVRSENA: [],
   DELIMICNO_USPESNA: [],
   OTKAZANA: [],
@@ -40,6 +40,11 @@ export function isTerminalBatchStatus(status: BatchStatus): boolean {
 /** Serija se može završiti samo iz radnih faza. */
 export function canCompleteBatch(status: BatchStatus): boolean {
   return status === "ZAPOCETA" || status === "U_TOKU";
+}
+
+/** Otkazivanje: planirana (oslobađanje) ili započeta (utrošak/otpad/povraćaj). */
+export function canCancelBatch(status: BatchStatus): boolean {
+  return status === "PLANIRANA" || status === "ZAPOCETA";
 }
 
 /**

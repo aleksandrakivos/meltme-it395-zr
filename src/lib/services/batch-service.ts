@@ -351,8 +351,14 @@ export type CancellableLine = {
   materialName: string;
   reservedQuantity: number;
   issuedQuantity: number;
-  consumedQuantity: number;
   unitPrice: number;
+};
+
+/** Izveštaj utroška pri otkazivanju iz ZAPOCETA (bez proizvedenih komada). */
+export type CancellationReportLine = {
+  materialId: string;
+  consumedQuantity: number;
+  wasteQuantity: number;
 };
 
 export type CancellationLine = {
@@ -362,49 +368,127 @@ export type CancellationLine = {
   releaseReservation: number;
   /** neutrošeno izdato koje se vraća na zalihe */
   returnToStock: number;
-  /** već utrošeno — ostaje kao trošak, ne vraća se */
+  consumedQuantity: number;
+  wasteQuantity: number;
+  /** utrošeno — ostaje kao trošak, ne vraća se (isto što i consumedQuantity) */
   writtenOff: number;
+  unitPrice: number;
+  lineCost: number;
 };
 
 export type PlanCancellationResult =
-  | { ok: true; lines: CancellationLine[]; writtenOffCost: number }
+  | {
+      ok: true;
+      lines: CancellationLine[];
+      writtenOffCost: number;
+      warnings: string[];
+    }
   | PlanError;
 
-/** Otkazivanje: oslobađa rezervacije i vraća neutrošeno izdato. */
+/**
+ * Otkazivanje serije
+ * PLANIRANA: samo oslobađanje rezervacija.
+ * ZAPOCETA: evidentira utrošak/otpad i vraća ostatak; bez gotovih proizvoda.
+ * U_TOKU: zabranjeno — serija se mora završiti.
+ */
 export function planCancellation(
   status: BatchStatus,
   lines: ReadonlyArray<CancellableLine>,
+  report: ReadonlyArray<CancellationReportLine> = [],
 ): PlanCancellationResult {
-  if (status !== "PLANIRANA" && status !== "ZAPOCETA" && status !== "U_TOKU") {
+  if (status === "U_TOKU") {
+    return {
+      ok: false,
+      error: "Serija u toku se ne može otkazati — završite seriju i evidentirajte stanje",
+    };
+  }
+  if (status !== "PLANIRANA" && status !== "ZAPOCETA") {
     return { ok: false, error: "Serija je već u završnom statusu" };
   }
 
-  const planned = lines.map((line) => {
-    const returnToStock =
-      status === "PLANIRANA"
-        ? 0
-        : roundTo(
-            Math.max(line.issuedQuantity - line.consumedQuantity, 0),
-            QUANTITY_DECIMALS,
-          );
+  if (status === "PLANIRANA") {
     return {
+      ok: true,
+      warnings: [],
+      writtenOffCost: 0,
+      lines: lines.map((line) => ({
+        materialId: line.materialId,
+        materialName: line.materialName,
+        releaseReservation: line.reservedQuantity,
+        returnToStock: 0,
+        consumedQuantity: 0,
+        wasteQuantity: 0,
+        writtenOff: 0,
+        unitPrice: line.unitPrice,
+        lineCost: 0,
+      })),
+    };
+  }
+
+  const byId = new Map(lines.map((l) => [l.materialId, l]));
+  for (const row of report) {
+    if (!byId.has(row.materialId)) {
+      return { ok: false, error: "Sirovina nije stavka ove serije" };
+    }
+  }
+  const reportById = new Map(report.map((r) => [r.materialId, r]));
+  const planned: CancellationLine[] = [];
+  const warnings: string[] = [];
+
+  for (const line of lines) {
+    const row = reportById.get(line.materialId);
+    const consumedQuantity = roundTo(
+      row ? row.consumedQuantity : 0,
+      QUANTITY_DECIMALS,
+    );
+    const wasteQuantity = roundTo(row ? row.wasteQuantity : 0, QUANTITY_DECIMALS);
+
+    if (consumedQuantity < 0 || wasteQuantity < 0) {
+      return {
+        ok: false,
+        error: `Količine ne mogu biti negativne: ${line.materialName}`,
+      };
+    }
+    if (consumedQuantity + wasteQuantity > line.issuedQuantity) {
+      return {
+        ok: false,
+        error: `Utrošeno i otpad prelaze izdatu količinu: ${line.materialName}`,
+      };
+    }
+
+    const returnToStock = roundTo(
+      line.issuedQuantity - consumedQuantity - wasteQuantity,
+      QUANTITY_DECIMALS,
+    );
+    const lineCost = roundTo(
+      (consumedQuantity + wasteQuantity) * line.unitPrice,
+      2,
+    );
+
+    planned.push({
       materialId: line.materialId,
       materialName: line.materialName,
       releaseReservation: line.reservedQuantity,
       returnToStock,
-      writtenOff: status === "PLANIRANA" ? 0 : line.consumedQuantity,
-    };
-  });
+      consumedQuantity,
+      wasteQuantity,
+      writtenOff: consumedQuantity,
+      unitPrice: line.unitPrice,
+      lineCost,
+    });
 
-  const writtenOffCost = roundTo(
-    lines.reduce(
-      (sum, line) =>
-        sum +
-        (status === "PLANIRANA" ? 0 : line.consumedQuantity * line.unitPrice),
-      0,
+    if (wasteQuantity > 0) {
+      warnings.push(`Otpad: ${line.materialName} (${wasteQuantity})`);
+    }
+  }
+
+  return {
+    ok: true,
+    lines: planned,
+    writtenOffCost: roundTo(
+      planned.reduce((sum, line) => sum + line.lineCost, 0),
+      2,
     ),
-    2,
-  );
-
-  return { ok: true, lines: planned, writtenOffCost };
+    warnings,
+  };
 }

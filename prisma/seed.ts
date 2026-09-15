@@ -764,9 +764,15 @@ async function main() {
           materialName: materialById.get(line.materialId)!.name,
           reservedQuantity: line.reservedQuantity,
           issuedQuantity: line.issuedQuantity,
-          consumedQuantity: line.consumedQuantity,
           unitPrice: line.unitPrice,
         })),
+        status === BatchStatus.ZAPOCETA
+          ? lines.map((line) => ({
+              materialId: line.materialId,
+              consumedQuantity: 0,
+              wasteQuantity: 0,
+            }))
+          : [],
       );
       if (!cancellation.ok) {
         throw new Error(`${seed.id}: ${cancellation.error}`);
@@ -780,6 +786,8 @@ async function main() {
           3,
         );
         line.reservedQuantity = 0;
+        line.consumedQuantity = cancelled.consumedQuantity;
+        line.wasteQuantity = cancelled.wasteQuantity;
         if (cancelled.returnToStock > 0) {
           material.stock = roundTo(material.stock + cancelled.returnToStock, 3);
           line.returnedQuantity = cancelled.returnToStock;
@@ -791,6 +799,19 @@ async function main() {
             unitPrice: line.unitPrice,
             batchId: seed.id,
             note: "Povraćaj pri otkazivanju serije",
+            createdBy: productionUserId,
+            createdAt: day(seed.plannedAt, 15),
+          });
+        }
+        if (cancelled.wasteQuantity > 0) {
+          movements.push({
+            id: `seed_mov_cancel_waste_${seed.id}_${cancelled.materialId}`,
+            materialId: cancelled.materialId,
+            type: StockMovementType.OTPAD,
+            quantity: cancelled.wasteQuantity,
+            unitPrice: line.unitPrice,
+            batchId: seed.id,
+            note: "Otpad pri otkazivanju serije",
             createdBy: productionUserId,
             createdAt: day(seed.plannedAt, 15),
           });

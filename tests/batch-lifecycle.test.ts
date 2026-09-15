@@ -3,6 +3,7 @@ import { BatchStatus } from "@prisma/client";
 import {
   BATCH_TRANSITIONS,
   allowedBatchTransitions,
+  canCancelBatch,
   canCompleteBatch,
   canTransitionBatch,
   deriveCompletionStatus,
@@ -65,6 +66,19 @@ describe("canTransitionBatch", () => {
     expect(canCompleteBatch(BatchStatus.ZAPOCETA)).toBe(true);
     expect(canCompleteBatch(BatchStatus.U_TOKU)).toBe(true);
     expect(canCompleteBatch(BatchStatus.PLANIRANA)).toBe(false);
+  });
+
+  it("otkazivanje je dozvoljeno samo iz PLANIRANA i ZAPOCETA", () => {
+    expect(canCancelBatch(BatchStatus.PLANIRANA)).toBe(true);
+    expect(canCancelBatch(BatchStatus.ZAPOCETA)).toBe(true);
+    expect(canCancelBatch(BatchStatus.U_TOKU)).toBe(false);
+    expect(
+      canTransitionBatch(BatchStatus.U_TOKU, BatchStatus.OTKAZANA),
+    ).toBe(false);
+    expect(allowedBatchTransitions(BatchStatus.U_TOKU)).toEqual([
+      BatchStatus.ZAVRSENA,
+      BatchStatus.DELIMICNO_USPESNA,
+    ]);
   });
 });
 

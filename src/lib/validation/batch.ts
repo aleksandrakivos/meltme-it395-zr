@@ -47,7 +47,21 @@ export const completeBatchSchema = z.object({
 
 export const cancelBatchSchema = z.object({
   batchId: z.string().min(1),
-  reason: z.string().trim().min(3, "Obrazložite otkazivanje (najmanje 3 karaktera)"),
+  reason: z
+    .string()
+    .trim()
+    .min(3, "Obrazložite otkazivanje (najmanje 3 karaktera)"),
+  lines: z
+    .array(
+      z.object({
+        materialId: z.string().min(1),
+        consumedQuantity: z
+          .number()
+          .nonnegative("Količina ne može biti negativna"),
+        wasteQuantity: z.number().nonnegative("Otpad ne može biti negativan"),
+      }),
+    )
+    .optional(),
 });
 
 export type PlanBatchInput = z.infer<typeof planBatchSchema>;

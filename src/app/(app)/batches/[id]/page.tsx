@@ -138,13 +138,27 @@ export default async function BatchDetailPage({
               </>
             ) : null}
             {isInProgress ? completeDialog("default") : null}
-            {!isTerminal ? (
+            {isPlanned || isStarted ? (
               <CancelBatchDialog
+                key={`${batch.id}-${isPlanned ? "planned" : "started"}`}
                 batchId={batch.id}
+                mode={isPlanned ? "planned" : "started"}
                 hint={
                   isPlanned
                     ? "Rezervacije sirovina se oslobađaju; stanje se ne menja."
-                    : "Neutrošene izdate sirovine se vraćaju na zalihe; već utrošeno ostaje kao trošak."
+                    : "Unesite utrošak i otpad po sirovini. Neutrošeno se vraća na zalihe; gotovi proizvodi se ne knjiže — za to završite seriju ili je označite kao u toku."
+                }
+                lines={
+                  isStarted
+                    ? lines.map((line) => ({
+                        materialId: line.materialId,
+                        materialName: line.materialName,
+                        unitLabel: line.unitLabel,
+                        issuedQuantity: line.issuedQuantity,
+                        unitPrice: line.unitPrice,
+                        reservedQuantity: line.reservedQuantity,
+                      }))
+                    : undefined
                 }
               />
             ) : null}
